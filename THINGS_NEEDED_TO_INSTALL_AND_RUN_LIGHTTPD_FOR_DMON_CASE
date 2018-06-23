@@ -22,7 +22,7 @@ static build using make
 * edit src/Makefile.am and, in the section under 'if LIGHTTPD_STATIC',
   update lighttpd_SOURCES with each module to be included in the static build
 
-I removed these stuff and made an empty plugin-static.h
+I removed these stuff and made an empty plugin-static.h (I think that uncommenting these stuff is not important but only making plugin-static.h correctly)
 
 #\
 #  mod_access.c \
