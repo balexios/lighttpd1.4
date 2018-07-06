@@ -88,6 +88,7 @@ RUN
   # ./lighttpd -D -f ../../lighttpd1.4/doc/config/basic_lighttpd.conf
     For my MVEE the following is better
     strace /home/dreamer/test_lighttpd/sbin/lighttpd -D -f /home/dreamer/DMon/Tests/Webservers/lighttpd1.4_testing/docroot/basic_lighttpd.conf
+    strace /home/dreamer/test_lighttpd/sbin/lighttpd -D -f /home/dreamer/DMon/Tests/Webservers/lighttpd1.4_testing/docroot/basic_lighttpd2.conf
 
 /home/dreamer/lighttpd1.4/src/server.c I needed to comment HAVE_VERSIONSTAMP_H in order for the write to fail at check buffer
 This is a small limitation however we can permit these kind of known false positives in DMON either with DCL or with known false positives
