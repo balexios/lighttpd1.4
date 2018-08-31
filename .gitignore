@@ -51,3 +51,4 @@ test_base64
 test_buffer
 test_configfile
 versionstamp.h
+bin/
