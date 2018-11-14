@@ -1,5 +1,7 @@
 #include "first.h"
 
+#undef NDEBUG
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -21,12 +23,14 @@ static void run_buffer_path_simplify(buffer *psrc, buffer *pdest, const char *in
 		fflush(stderr);
 		abort();
 	} else {
+	      #if 0
 		fprintf(stdout,
 			"%s.%d: buffer_path_simplify('%s') succeeded: got '%s'\n",
 			__FILE__,
 			__LINE__,
 			in,
 			out);
+	      #endif
 
 		if (psrc != pdest) buffer_copy_buffer(psrc, pdest);
 		buffer_path_simplify(pdest, psrc);
@@ -69,7 +73,7 @@ static void test_buffer_path_simplify_with(buffer *psrc, buffer *pdest) {
 	run_buffer_path_simplify(psrc, pdest, CONST_STR_LEN("/.././xyz/.."), CONST_STR_LEN("/"));
 }
 
-static void test_buffer_path_simplify() {
+static void test_buffer_path_simplify(void) {
 	buffer *psrc = buffer_init();
 	buffer *pdest = buffer_init();
 
@@ -81,8 +85,25 @@ static void test_buffer_path_simplify() {
 	buffer_free(pdest);
 }
 
+static void test_buffer_to_lower_upper(void) {
+	buffer *psrc = buffer_init();
+
+	buffer_copy_string_len(psrc, CONST_STR_LEN("0123456789abcdefghijklmnopqrstuvwxyz"));
+	buffer_to_lower(psrc);
+	assert(buffer_is_equal_string(psrc, CONST_STR_LEN("0123456789abcdefghijklmnopqrstuvwxyz")));
+	buffer_to_upper(psrc);
+	assert(buffer_is_equal_string(psrc, CONST_STR_LEN("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")));
+	buffer_to_upper(psrc);
+	assert(buffer_is_equal_string(psrc, CONST_STR_LEN("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")));
+	buffer_to_lower(psrc);
+	assert(buffer_is_equal_string(psrc, CONST_STR_LEN("0123456789abcdefghijklmnopqrstuvwxyz")));
+
+	buffer_free(psrc);
+}
+
 int main() {
 	test_buffer_path_simplify();
+	test_buffer_to_lower_upper();
 
 	return 0;
 }

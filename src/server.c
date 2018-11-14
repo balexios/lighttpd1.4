@@ -2,20 +2,18 @@
 
 #include "server.h"
 #include "buffer.h"
+#include "burl.h"
 #include "network.h"
 #include "log.h"
-#include "keyvalue.h"
 #include "rand.h"
-#include "response.h"
-#include "request.h"
 #include "chunk.h"
 #include "http_auth.h"
-#include "http_chunk.h"
 #include "http_vhostdb.h"
 #include "fdevent.h"
 #include "connections.h"
 #include "sock_addr.h"
 #include "stat_cache.h"
+#include "configfile.h"
 #include "plugin.h"
 #include "joblist.h"
 #include "network_write.h"
@@ -73,7 +71,8 @@
 # include <sys/prctl.h>
 #endif
 
-#if defined HAVE_LIBSSL && defined HAVE_OPENSSL_SSL_H
+#include "sys-crypto.h"
+#ifdef USE_OPENSSL_CRYPTO
 #define USE_SSL
 #define TEXT_SSL " (ssl)"
 #else
@@ -287,6 +286,15 @@ static server *server_init(void) {
 	srv->srvconf.http_header_strict  = 1;
 	srv->srvconf.http_host_strict    = 1; /*(implies http_host_normalize)*/
 	srv->srvconf.http_host_normalize = 0;
+      #if 0
+	srv->srvconf.http_url_normalize = HTTP_PARSEOPT_URL_NORMALIZE
+					| HTTP_PARSEOPT_URL_NORMALIZE_UNRESERVED
+					| HTTP_PARSEOPT_URL_NORMALIZE_CTRLS_REJECT
+					| HTTP_PARSEOPT_URL_NORMALIZE_PATH_BACKSLASH_TRANS
+					| HTTP_PARSEOPT_URL_NORMALIZE_PATH_2F_DECODE
+					| HTTP_PARSEOPT_URL_NORMALIZE_PATH_DOTSEG_REMOVE;
+      #endif
+	srv->srvconf.http_url_normalize = 0; /* temporary; change in future */
 	srv->srvconf.high_precision_timestamps = 0;
 	srv->srvconf.max_request_field_size = 8192;
 	srv->srvconf.loadavg[0] = 0.0;
@@ -580,6 +588,11 @@ static void show_features (void) {
       "\t+ LDAP support\n"
 #else
       "\t- LDAP support\n"
+#endif
+#ifdef HAVE_PAM
+      "\t+ PAM support\n"
+#else
+      "\t- PAM support\n"
 #endif
 #ifdef USE_MEMCACHED
       "\t+ memcached support\n"
@@ -1043,7 +1056,7 @@ static int server_main (server * const srv, int argc, char **argv) {
 	if (print_config) {
 		data_unset *dc = srv->config_context->data[0];
 		if (dc) {
-			dc->print(dc, 0);
+			dc->fn->print(dc, 0);
 			fprintf(stdout, "\n");
 		} else {
 			/* shouldn't happend */

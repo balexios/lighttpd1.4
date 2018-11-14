@@ -3,7 +3,6 @@
 #include "first.h"
 
 #include "base_decls.h"
-#include "settings.h"   /* (handler_t) */
 
 struct fdevents;        /* declaration */
 typedef struct fdevents fdevents;
@@ -21,9 +20,12 @@ typedef handler_t (*fdevent_handler)(struct server *srv, void *ctx, int revents)
 #define FDEVENT_NVAL   BV(5)
 #define FDEVENT_RDHUP  BV(13)
 
-#define FDEVENT_STREAM_REQUEST          BV(0)
-#define FDEVENT_STREAM_REQUEST_BUFMIN   BV(1)
-#define FDEVENT_STREAM_REQUEST_POLLIN   BV(15)
+#define FDEVENT_STREAM_REQUEST                  BV(0)
+#define FDEVENT_STREAM_REQUEST_BUFMIN           BV(1)
+#define FDEVENT_STREAM_REQUEST_POLLRDHUP        BV(12)
+#define FDEVENT_STREAM_REQUEST_TCP_FIN          BV(13)
+#define FDEVENT_STREAM_REQUEST_BACKEND_SHUT_WR  BV(14)
+#define FDEVENT_STREAM_REQUEST_POLLIN           BV(15)
 
 #define FDEVENT_STREAM_RESPONSE           BV(0)
 #define FDEVENT_STREAM_RESPONSE_BUFMIN    BV(1)
@@ -66,6 +68,7 @@ int fdevent_open_cloexec(const char *pathname, int flags, mode_t mode);
 struct sockaddr;
 int fdevent_accept_listenfd(int listenfd, struct sockaddr *addr, size_t *addrlen);
 
+char ** fdevent_environ(void);
 int fdevent_open_devnull(void);
 int fdevent_open_dirname(char *path);
 int fdevent_set_stdin_stdout_stderr(int fdin, int fdout, int fderr);

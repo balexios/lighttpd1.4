@@ -4,6 +4,7 @@
 #include "fdevent.h"
 #include "log.h"
 #include "buffer.h"
+#include "http_header.h"
 #include "sock_addr.h"
 
 #include "plugin.h"
@@ -766,7 +767,7 @@ REQUESTDONE_FUNC(log_access_write) {
 	size_t j;
 
 	int newts = 0;
-	data_string *ds;
+	buffer *vb;
 	struct timespec ts = { 0, 0 };
 
 	mod_accesslog_patch_connection(srv, con, p);
@@ -942,8 +943,8 @@ REQUESTDONE_FUNC(log_access_write) {
 				buffer_append_string_len(b, CONST_STR_LEN("-"));
 				break;
 			case FORMAT_REMOTE_USER:
-				if (NULL != (ds = (data_string *)array_get_element(con->environment, "REMOTE_USER")) && !buffer_string_is_empty(ds->value)) {
-					accesslog_append_escaped(b, ds->value);
+				if (NULL != (vb = http_header_env_get(con, CONST_STR_LEN("REMOTE_USER")))) {
+					accesslog_append_escaped(b, vb);
 				} else {
 					buffer_append_string_len(b, CONST_STR_LEN("-"));
 				}
@@ -966,23 +967,23 @@ REQUESTDONE_FUNC(log_access_write) {
 				}
 				break;
 			case FORMAT_HEADER:
-				if (NULL != (ds = (data_string *)array_get_element_klen(con->request.headers, CONST_BUF_LEN(f->string)))) {
-					accesslog_append_escaped(b, ds->value);
+				if (NULL != (vb = http_header_request_get(con, HTTP_HEADER_UNSPECIFIED, CONST_BUF_LEN(f->string)))) {
+					accesslog_append_escaped(b, vb);
 				} else {
 					buffer_append_string_len(b, CONST_STR_LEN("-"));
 				}
 				break;
 			case FORMAT_RESPONSE_HEADER:
-				if (NULL != (ds = (data_string *)array_get_element_klen(con->response.headers, CONST_BUF_LEN(f->string)))) {
-					accesslog_append_escaped(b, ds->value);
+				if (NULL != (vb = http_header_response_get(con, HTTP_HEADER_UNSPECIFIED, CONST_BUF_LEN(f->string)))) {
+					accesslog_append_escaped(b, vb);
 				} else {
 					buffer_append_string_len(b, CONST_STR_LEN("-"));
 				}
 				break;
 			case FORMAT_ENV:
 			case FORMAT_NOTE:
-				if (NULL != (ds = (data_string *)array_get_element_klen(con->environment, CONST_BUF_LEN(f->string)))) {
-					accesslog_append_escaped(b, ds->value);
+				if (NULL != (vb = http_header_env_get(con, CONST_BUF_LEN(f->string)))) {
+					accesslog_append_escaped(b, vb);
 				} else {
 					buffer_append_string_len(b, CONST_STR_LEN("-"));
 				}
@@ -1027,7 +1028,7 @@ REQUESTDONE_FUNC(log_access_write) {
 					con->request.http_version == HTTP_VERSION_1_1 ? "HTTP/1.1" : "HTTP/1.0", 8);
 				break;
 			case FORMAT_REQUEST_METHOD:
-				buffer_append_string(b, get_http_method_name(con->request.http_method));
+				http_method_append(b, con->request.http_method);
 				break;
 			case FORMAT_PERCENT:
 				buffer_append_string_len(b, CONST_STR_LEN("%"));
@@ -1093,8 +1094,8 @@ REQUESTDONE_FUNC(log_access_write) {
 				}
 				break;
 			case FORMAT_COOKIE:
-				if (NULL != (ds = (data_string *)array_get_element(con->request.headers, "Cookie"))) {
-					char *str = ds->value->ptr;
+				if (NULL != (vb = http_header_request_get(con, HTTP_HEADER_COOKIE, CONST_STR_LEN("Cookie")))) {
+					char *str = vb->ptr;
 					size_t len = buffer_string_length(f->string);
 					do {
 						while (*str == ' ' || *str == '\t') ++str;

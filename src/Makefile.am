@@ -1,13 +1,23 @@
 AM_CFLAGS = $(FAM_CFLAGS) $(LIBUNWIND_CFLAGS)
 
-noinst_PROGRAMS=proc_open test_buffer test_base64 test_configfile
+noinst_PROGRAMS=\
+	t/test_array \
+	t/test_buffer \
+	t/test_burl \
+	t/test_base64 \
+	t/test_configfile \
+	t/test_request
+
 sbin_PROGRAMS=lighttpd lighttpd-angel
 LEMON=$(top_builddir)/src/lemon$(BUILD_EXEEXT)
 
 TESTS=\
-	test_buffer$(EXEEXT) \
-	test_base64$(EXEEXT) \
-	test_configfile$(EXEEXT)
+	t/test_array$(EXEEXT) \
+	t/test_buffer$(EXEEXT) \
+	t/test_burl$(EXEEXT) \
+	t/test_base64$(EXEEXT) \
+	t/test_configfile$(EXEEXT) \
+	t/test_request$(EXEEXT)
 
 lemon$(BUILD_EXEEXT): lemon.c
 	$(AM_V_CC)$(CC_FOR_BUILD) $(CPPFLAGS_FOR_BUILD) $(CFLAGS_FOR_BUILD) $(LDFLAGS_FOR_BUILD) -o $@ $(srcdir)/lemon.c
@@ -55,8 +65,8 @@ BUILT_SOURCES = parsers versionstamp
 MAINTAINERCLEANFILES = configparser.c configparser.h mod_ssi_exprparser.c mod_ssi_exprparser.h
 CLEANFILES = versionstamp.h versionstamp.h.tmp lemon$(BUILD_EXEEXT)
 
-common_src=base64.c buffer.c log.c \
-	keyvalue.c chunk.c  \
+common_src=base64.c buffer.c burl.c log.c \
+	http_header.c http_kv.c keyvalue.c chunk.c  \
 	http_chunk.c stream.c fdevent.c gw_backend.c \
 	stat_cache.c plugin.c joblist.c etag.c array.c \
 	data_string.c data_array.c \
@@ -76,14 +86,14 @@ common_src=base64.c buffer.c log.c \
 	rand.c \
 	request.c \
 	sock_addr.c \
-	splaytree.c status_counter.c \
+	splaytree.c \
 	safe_memclear.c
 
 src = server.c response.c connections.c \
 	inet_ntop_cache.c \
 	network.c \
 	network_write.c \
-	configfile.c configparser.c proc_open.c
+	configfile.c configparser.c
 
 lib_LTLIBRARIES =
 
@@ -250,6 +260,11 @@ mod_proxy_la_SOURCES = mod_proxy.c
 mod_proxy_la_LDFLAGS = $(common_module_ldflags)
 mod_proxy_la_LIBADD = $(common_libadd)
 
+lib_LTLIBRARIES += mod_sockproxy.la
+mod_sockproxy_la_SOURCES = mod_sockproxy.c
+mod_sockproxy_la_LDFLAGS = $(common_module_ldflags)
+mod_sockproxy_la_LIBADD = $(common_libadd)
+
 lib_LTLIBRARIES += mod_ssi.la
 mod_ssi_la_SOURCES = mod_ssi_exprparser.c mod_ssi_expr.c mod_ssi.c
 mod_ssi_la_LDFLAGS = $(common_module_ldflags)
@@ -329,6 +344,13 @@ mod_authn_ldap_la_LDFLAGS = $(common_module_ldflags)
 mod_authn_ldap_la_LIBADD = $(LDAP_LIB) $(LBER_LIB) $(common_libadd)
 endif
 
+if BUILD_WITH_PAM
+lib_LTLIBRARIES += mod_authn_pam.la
+mod_authn_pam_la_SOURCES = mod_authn_pam.c
+mod_authn_pam_la_LDFLAGS = $(common_module_ldflags)
+mod_authn_pam_la_LIBADD = $(PAM_LIB) $(common_libadd)
+endif
+
 if BUILD_WITH_MYSQL
 lib_LTLIBRARIES += mod_authn_mysql.la
 mod_authn_mysql_la_SOURCES = mod_authn_mysql.c
@@ -383,10 +405,10 @@ mod_wstunnel_la_LDFLAGS = $(common_module_ldflags)
 mod_wstunnel_la_LIBADD = $(common_libadd) $(CRYPTO_LIB)
 
 
-hdr = server.h base64.h buffer.h network.h log.h keyvalue.h \
+hdr = server.h base64.h buffer.h burl.h network.h log.h http_kv.h keyvalue.h \
 	response.h request.h fastcgi.h chunk.h \
 	first.h settings.h http_chunk.h \
-	algo_sha1.h md5.h http_auth.h http_vhostdb.h stream.h \
+	algo_sha1.h md5.h http_auth.h http_header.h http_vhostdb.h stream.h \
 	fdevent.h gw_backend.h connections.h base.h base_decls.h stat_cache.h \
 	plugin.h \
 	etag.h joblist.h array.h vector.h crc32.h \
@@ -394,9 +416,9 @@ hdr = server.h base64.h buffer.h network.h log.h keyvalue.h \
 	mod_ssi.h mod_ssi_expr.h inet_ntop_cache.h \
 	configparser.h mod_ssi_exprparser.h \
 	rand.h \
-	sys-endian.h sys-mmap.h sys-socket.h sys-strings.h \
+	sys-crypto.h sys-endian.h sys-mmap.h sys-socket.h sys-strings.h \
 	mod_cml.h mod_cml_funcs.h \
-	safe_memclear.h sock_addr.h splaytree.h proc_open.h status_counter.h \
+	safe_memclear.h sock_addr.h splaytree.h status_counter.h \
 	mod_magnet_cache.h
 
 
@@ -470,6 +492,10 @@ if BUILD_WITH_LDAP
 lighttpd_SOURCES += mod_authn_ldap.c mod_vhostdb_ldap.c
 lighttpd_LDADD += $(LDAP_LIB) $(LBER_LIB)
 endif
+if BUILD_WITH_PAM
+lighttpd_SOURCES += mod_authn_pam.c
+lighttpd_LDADD += $(PAM_LIB)
+endif
 if BUILD_WITH_MYSQL
 lighttpd_SOURCES += mod_authn_mysql.c mod_mysql_vhost.c mod_vhostdb_mysql.c
 lighttpd_CPPFLAGS += $(MYSQL_INCLUDE)
@@ -510,18 +536,23 @@ lighttpd_LDFLAGS = -export-dynamic
 
 endif
 
-proc_open_SOURCES = proc_open.c buffer.c
-proc_open_LDADD = $(LIBUNWIND_LIBS)
-proc_open_CPPFLAGS= -DDEBUG_PROC_OPEN
+t_test_array_SOURCES = t/test_array.c array.c data_array.c data_integer.c data_string.c buffer.c
+t_test_array_LDADD = $(LIBUNWIND_LIBS)
 
-test_buffer_SOURCES = test_buffer.c buffer.c
-test_buffer_LDADD = $(LIBUNWIND_LIBS)
+t_test_buffer_SOURCES = t/test_buffer.c buffer.c
+t_test_buffer_LDADD = $(LIBUNWIND_LIBS)
 
-test_base64_SOURCES = test_base64.c base64.c buffer.c
-test_base64_LDADD = $(LIBUNWIND_LIBS)
+t_test_base64_SOURCES = t/test_base64.c base64.c buffer.c
+t_test_base64_LDADD = $(LIBUNWIND_LIBS)
 
-test_configfile_SOURCES = test_configfile.c buffer.c array.c data_string.c keyvalue.c vector.c log.c sock_addr.c
-test_configfile_LDADD = $(PCRE_LIB) $(LIBUNWIND_LIBS)
+t_test_burl_SOURCES = t/test_burl.c burl.c buffer.c base64.c
+t_test_burl_LDADD = $(LIBUNWIND_LIBS)
+
+t_test_configfile_SOURCES = t/test_configfile.c buffer.c array.c data_config.c data_integer.c data_string.c http_header.c http_kv.c vector.c log.c sock_addr.c
+t_test_configfile_LDADD = $(PCRE_LIB) $(LIBUNWIND_LIBS)
+
+t_test_request_SOURCES = t/test_request.c request.c buffer.c array.c data_integer.c data_string.c http_header.c http_kv.c log.c sock_addr.c
+t_test_request_LDADD = $(LIBUNWIND_LIBS)
 
 noinst_HEADERS   = $(hdr)
 EXTRA_DIST = \

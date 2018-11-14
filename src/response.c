@@ -1,8 +1,11 @@
 #include "first.h"
 
 #include "response.h"
+#include "base.h"
+#include "burl.h"
 #include "fdevent.h"
-#include "keyvalue.h"
+#include "http_header.h"
+#include "http_kv.h"
 #include "log.h"
 #include "stat_cache.h"
 #include "chunk.h"
@@ -21,21 +24,14 @@
 #include <time.h>
 
 int http_response_write_header(server *srv, connection *con) {
-	buffer *b;
-	size_t i;
-	int have_date = 0;
-	int have_server = 0;
-
-	b = buffer_init();
+	buffer * const b = buffer_init();
 
 	if (con->request.http_version == HTTP_VERSION_1_1) {
 		buffer_copy_string_len(b, CONST_STR_LEN("HTTP/1.1 "));
 	} else {
 		buffer_copy_string_len(b, CONST_STR_LEN("HTTP/1.0 "));
 	}
-	buffer_append_int(b, con->http_status);
-	buffer_append_string_len(b, CONST_STR_LEN(" "));
-	buffer_append_string(b, get_http_status_name(con->http_status));
+	http_status_append(b, con->http_status);
 
 	/* disable keep-alive if requested */
 	if (con->request_count > con->conf.max_keep_alive_requests || 0 == con->conf.max_keep_alive_idle) {
@@ -44,54 +40,48 @@ int http_response_write_header(server *srv, connection *con) {
 		con->keep_alive_idle = con->conf.max_keep_alive_idle;
 	}
 
-	if ((con->parsed_response & HTTP_UPGRADE) && con->request.http_version == HTTP_VERSION_1_1) {
-		response_header_overwrite(srv, con, CONST_STR_LEN("Connection"), CONST_STR_LEN("upgrade"));
+	if ((con->response.htags & HTTP_HEADER_UPGRADE) && con->request.http_version == HTTP_VERSION_1_1) {
+		http_header_response_set(con, HTTP_HEADER_CONNECTION, CONST_STR_LEN("Connection"), CONST_STR_LEN("upgrade"));
 	} else if (0 == con->keep_alive) {
-		response_header_overwrite(srv, con, CONST_STR_LEN("Connection"), CONST_STR_LEN("close"));
+		http_header_response_set(con, HTTP_HEADER_CONNECTION, CONST_STR_LEN("Connection"), CONST_STR_LEN("close"));
 	} else if (con->request.http_version == HTTP_VERSION_1_0) {/*(&& con->keep_alive != 0)*/
-		response_header_overwrite(srv, con, CONST_STR_LEN("Connection"), CONST_STR_LEN("keep-alive"));
+		http_header_response_set(con, HTTP_HEADER_CONNECTION, CONST_STR_LEN("Connection"), CONST_STR_LEN("keep-alive"));
+	}
+
+	if (304 == con->http_status && (con->response.htags & HTTP_HEADER_CONTENT_ENCODING)) {
+		buffer *vb = http_header_response_get(con, HTTP_HEADER_CONTENT_ENCODING, CONST_STR_LEN("Content-Encoding"));
+		if (NULL != vb) buffer_reset(vb);
 	}
 
 	/* add all headers */
-	for (i = 0; i < con->response.headers->used; i++) {
-		data_string *ds;
-
-		ds = (data_string *)con->response.headers->data[i];
+	for (size_t i = 0; i < con->response.headers->used; ++i) {
+		const data_string * const ds = (data_string *)con->response.headers->data[i];
 
 		if (buffer_string_is_empty(ds->value) || buffer_string_is_empty(ds->key)) continue;
-		if (0 == strncasecmp(ds->key->ptr, CONST_STR_LEN("X-Sendfile"))) continue;
-		if (0 == strncasecmp(ds->key->ptr, CONST_STR_LEN("X-LIGHTTPD-"))) {
-			if (0 == strncasecmp(ds->key->ptr+sizeof("X-LIGHTTPD-")-1, CONST_STR_LEN("KBytes-per-second"))) {
-				/* "X-LIGHTTPD-KBytes-per-second" */
-				long limit = strtol(ds->value->ptr, NULL, 10);
-				if (limit > 0
-				    && (limit < con->conf.kbytes_per_second
-				        || 0 == con->conf.kbytes_per_second)) {
-					if (limit > USHRT_MAX) limit= USHRT_MAX;
-					con->conf.kbytes_per_second = limit;
+		if ((ds->key->ptr[0] & 0xdf) == 'X') {
+			if (0 == strncasecmp(ds->key->ptr, CONST_STR_LEN("X-Sendfile"))) continue;
+			if (0 == strncasecmp(ds->key->ptr, CONST_STR_LEN("X-LIGHTTPD-"))) {
+				if (0 == strncasecmp(ds->key->ptr+sizeof("X-LIGHTTPD-")-1, CONST_STR_LEN("KBytes-per-second"))) {
+					/* "X-LIGHTTPD-KBytes-per-second" */
+					long limit = strtol(ds->value->ptr, NULL, 10);
+					if (limit > 0
+					    && (limit < con->conf.kbytes_per_second
+					        || 0 == con->conf.kbytes_per_second)) {
+						if (limit > USHRT_MAX) limit= USHRT_MAX;
+						con->conf.kbytes_per_second = limit;
+					}
 				}
+				continue;
 			}
-			continue;
-		} else {
-			if (0 == strcasecmp(ds->key->ptr, "Date")) have_date = 1;
-			if (0 == strcasecmp(ds->key->ptr, "Server")) have_server = 1;
-			if (0 == strcasecmp(ds->key->ptr, "Content-Encoding") && 304 == con->http_status) continue;
-
-			buffer_append_string_len(b, CONST_STR_LEN("\r\n"));
-			buffer_append_string_buffer(b, ds->key);
-			buffer_append_string_len(b, CONST_STR_LEN(": "));
-#if 0
-			/** 
-			 * the value might contain newlines, encode them with at least one white-space
-			 */
-			buffer_append_string_encoded(b, CONST_BUF_LEN(ds->value), ENCODING_HTTP_HEADER);
-#else
-			buffer_append_string_buffer(b, ds->value);
-#endif
 		}
+
+		buffer_append_string_len(b, CONST_STR_LEN("\r\n"));
+		buffer_append_string_buffer(b, ds->key);
+		buffer_append_string_len(b, CONST_STR_LEN(": "));
+		buffer_append_string_buffer(b, ds->value);
 	}
 
-	if (!have_date) {
+	if (!(con->response.htags & HTTP_HEADER_DATE)) {
 		/* HTTP/1.1 requires a Date: header */
 		buffer_append_string_len(b, CONST_STR_LEN("\r\nDate: "));
 
@@ -107,10 +97,10 @@ int http_response_write_header(server *srv, connection *con) {
 		buffer_append_string_buffer(b, srv->ts_date_str);
 	}
 
-	if (!have_server) {
+	if (!(con->response.htags & HTTP_HEADER_SERVER)) {
 		if (!buffer_string_is_empty(con->conf.server_tag)) {
 			buffer_append_string_len(b, CONST_STR_LEN("\r\nServer: "));
-			buffer_append_string_encoded(b, CONST_BUF_LEN(con->conf.server_tag), ENCODING_HTTP_HEADER);
+			buffer_append_string_len(b, CONST_BUF_LEN(con->conf.server_tag));
 		}
 	}
 
@@ -181,7 +171,12 @@ static handler_t http_response_physical_path_check(server *srv, connection *con)
 			size_t len = buffer_string_length(con->physical.basedir);
 			if (len > 0 && '/' == con->physical.basedir->ptr[len-1]) --len;
 			pathinfo = con->physical.path->ptr + len;
-			if ('/' != *pathinfo) pathinfo = NULL;
+			if ('/' != *pathinfo) {
+				pathinfo = NULL;
+			}
+			else if (pathinfo == con->physical.path->ptr) { /*(basedir is "/")*/
+				pathinfo = strchr(pathinfo+1, '/');
+			}
 		}
 
 		for (char *pprev = pathinfo; pathinfo; pprev = pathinfo, pathinfo = strchr(pathinfo+1, '/')) {
@@ -274,7 +269,7 @@ handler_t http_response_prepare(server *srv, connection *con) {
 	    (con->http_status != 0 && con->http_status != 200)) {
 		/* remove a packets in the queue */
 		if (con->file_finished == 0) {
-			chunkqueue_reset(con->write_queue);
+			http_response_body_clear(con, 0);
 		}
 
 		return HANDLER_FINISHED;
@@ -282,12 +277,6 @@ handler_t http_response_prepare(server *srv, connection *con) {
 
 	/* no decision yet, build conf->filename */
 	if (con->mode == DIRECT && buffer_is_empty(con->physical.path)) {
-
-
-	    if (!con->async_callback) {
-
-
-		char *qstr;
 
 		/* we only come here when we have the parse the full request again
 		 *
@@ -301,6 +290,8 @@ handler_t http_response_prepare(server *srv, connection *con) {
 		 *
 		 *  */
 
+	    if (!con->async_callback) {
+
 		config_cond_cache_reset(srv, con);
 		config_setup_connection(srv, con); /* Perhaps this could be removed at other places. */
 
@@ -312,7 +303,7 @@ handler_t http_response_prepare(server *srv, connection *con) {
 		 * prepare strings
 		 *
 		 * - uri.path_raw
-		 * - uri.path (secure)
+		 * - uri.path
 		 * - uri.query
 		 *
 		 */
@@ -337,36 +328,79 @@ handler_t http_response_prepare(server *srv, connection *con) {
 		buffer_copy_buffer(con->uri.authority, con->request.http_host);
 		buffer_to_lower(con->uri.authority);
 
-		/** their might be a fragment which has to be cut away */
-		if (NULL != (qstr = strchr(con->request.uri->ptr, '#'))) {
-			buffer_string_set_length(con->request.uri, qstr - con->request.uri->ptr);
-		}
-
-		/** extract query string from request.uri */
-		if (NULL != (qstr = strchr(con->request.uri->ptr, '?'))) {
-			buffer_copy_string    (con->uri.query, qstr + 1);
-			buffer_copy_string_len(con->uri.path_raw, con->request.uri->ptr, qstr - con->request.uri->ptr);
-		} else {
-			buffer_reset     (con->uri.query);
+		if (con->request.http_method == HTTP_METHOD_CONNECT
+		    || (con->request.http_method == HTTP_METHOD_OPTIONS
+			&& con->request.uri->ptr[0] == '*'
+			&& con->request.uri->ptr[1] == '\0')) {
+			/* CONNECT ... (or) OPTIONS * ... */
 			buffer_copy_buffer(con->uri.path_raw, con->request.uri);
-		}
-
-		/* decode url to path
-		 *
-		 * - decode url-encodings  (e.g. %20 -> ' ')
-		 * - remove path-modifiers (e.g. /../)
-		 */
-
-		if (con->request.http_method == HTTP_METHOD_OPTIONS &&
-		    con->uri.path_raw->ptr[0] == '*' && con->uri.path_raw->ptr[1] == '\0') {
-			/* OPTIONS * ... */
 			buffer_copy_buffer(con->uri.path, con->uri.path_raw);
-		} else if (con->request.http_method == HTTP_METHOD_CONNECT) {
-			buffer_copy_buffer(con->uri.path, con->uri.path_raw);
+			buffer_reset(con->uri.query);
 		} else {
-			buffer_copy_buffer(srv->tmp_buf, con->uri.path_raw);
-			buffer_urldecode_path(srv->tmp_buf);
-			buffer_path_simplify(con->uri.path, srv->tmp_buf);
+			char *qstr;
+			if (con->conf.http_parseopts & HTTP_PARSEOPT_URL_NORMALIZE) {
+				/*size_t len = buffer_string_length(con->request.uri);*/
+				int qs = burl_normalize(con->request.uri, srv->tmp_buf, con->conf.http_parseopts);
+				if (-2 == qs) {
+					log_error_write(srv, __FILE__, __LINE__, "sb",
+							"invalid character in URI -> 400",
+							con->request.uri);
+					con->keep_alive = 0;
+					con->http_status = 400; /* Bad Request */
+					con->file_finished = 1;
+					return HANDLER_FINISHED;
+				}
+				qstr = (-1 == qs) ? NULL : con->request.uri->ptr+qs;
+			      #if 0  /* future: might enable here, or below for all requests */
+				/* (Note: total header size not recalculated on HANDLER_COMEBACK
+				 *  even if other request headers changed during processing)
+				 * (If (0 != con->loops_per_request), then the generated request
+				 *  is too large.  Should a different error be returned?) */
+				con->header_len -= len;
+				len = buffer_string_length(con->request.uri);
+				con->header_len += len;
+				if (len > MAX_HTTP_REQUEST_URI) {
+					con->keep_alive = 0;
+					con->http_status = 414; /* Request-URI Too Long */
+					con->file_finished = 1;
+					return HANDLER_FINISHED;
+				}
+				if (con->header_len > MAX_HTTP_REQUEST_HEADER) {
+					log_error_write(srv, __FILE__, __LINE__, "sds",
+							"request header fields too large:", con->header_len, "-> 431");
+					con->keep_alive = 0;
+					con->http_status = 431; /* Request Header Fields Too Large */
+					con->file_finished = 1;
+					return HANDLER_FINISHED;
+				}
+			      #endif
+			} else {
+				qstr = strchr(con->request.uri->ptr, '#');/* discard fragment */
+				if (qstr) buffer_string_set_length(con->request.uri, qstr - con->request.uri->ptr);
+				qstr = strchr(con->request.uri->ptr, '?');
+			}
+
+			/** extract query string from request.uri */
+			if (NULL != qstr) {
+				const char * const pstr = con->request.uri->ptr;
+				const size_t plen = (size_t)(qstr - pstr);
+				const size_t rlen = buffer_string_length(con->request.uri);
+				buffer_copy_string_len(con->uri.query, qstr + 1, rlen - plen - 1);
+				buffer_copy_string_len(con->uri.path_raw, pstr, plen);
+			} else {
+				buffer_reset(con->uri.query);
+				buffer_copy_buffer(con->uri.path_raw, con->request.uri);
+			}
+
+			/* decode url to path
+			 *
+			 * - decode url-encodings  (e.g. %20 -> ' ')
+			 * - remove path-modifiers (e.g. /../)
+			 */
+
+			buffer_copy_buffer(con->uri.path, con->uri.path_raw);
+			buffer_urldecode_path(con->uri.path);
+			buffer_path_simplify(con->uri.path, con->uri.path);
 		}
 
 		con->conditional_is_valid[COMP_SERVER_SOCKET] = 1;       /* SERVERsocket */
@@ -457,11 +491,18 @@ handler_t http_response_prepare(server *srv, connection *con) {
 		    con->uri.path->ptr[0] == '*' && con->uri.path_raw->ptr[1] == '\0') {
 			/* option requests are handled directly without checking of the path */
 
-			response_header_insert(srv, con, CONST_STR_LEN("Allow"), CONST_STR_LEN("OPTIONS, GET, HEAD, POST"));
+			http_header_response_append(con, HTTP_HEADER_OTHER, CONST_STR_LEN("Allow"), CONST_STR_LEN("OPTIONS, GET, HEAD, POST"));
 
 			con->http_status = 200;
 			con->file_finished = 1;
 
+			return HANDLER_FINISHED;
+		}
+
+		if (con->request.http_method == HTTP_METHOD_CONNECT && con->mode == DIRECT) {
+			con->keep_alive = 0;
+			con->http_status = 405; /* Method Not Allowed */
+			con->file_finished = 1;
 			return HANDLER_FINISHED;
 		}
 
@@ -590,6 +631,13 @@ handler_t http_response_prepare(server *srv, connection *con) {
 			log_error_write(srv, __FILE__, __LINE__,  "sb", "Path         :", con->physical.path);
 		}
 
+		if (con->request.http_method == HTTP_METHOD_CONNECT) {
+			/* do not permit CONNECT requests to hit filesystem hooks
+			 * since the CONNECT URI bypassed path normalization */
+			/* (This check is located here so that con->physical.path
+			 *  is filled in above to avoid repeating work next time
+			 *  http_response_prepare() is called while processing request) */
+		} else
 		switch(r = plugins_call_handle_physical(srv, con)) {
 		case HANDLER_GO_ON:
 			break;

@@ -1,66 +1,49 @@
 #include "first.h"
 
 #include "base.h"
+#include "keyvalue.h"
 #include "log.h"
 #include "buffer.h"
+#include "burl.h"
+#include "http_header.h"
 
 #include "plugin.h"
-#include "response.h"
 
-#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 
 typedef struct {
 	pcre_keyvalue_buffer *redirect;
 	data_config *context; /* to which apply me */
-
 	unsigned short redirect_code;
 } plugin_config;
 
 typedef struct {
 	PLUGIN_DATA;
-	buffer *location;
-
 	plugin_config **config_storage;
-
 	plugin_config conf;
 } plugin_data;
 
 INIT_FUNC(mod_redirect_init) {
-	plugin_data *p;
-
-	p = calloc(1, sizeof(*p));
-
-	p->location = buffer_init();
-
-	return p;
+	return calloc(1, sizeof(plugin_data));
 }
 
 FREE_FUNC(mod_redirect_free) {
 	plugin_data *p = p_d;
-
 	if (!p) return HANDLER_GO_ON;
 
 	if (p->config_storage) {
 		size_t i;
 		for (i = 0; i < srv->config_context->used; i++) {
 			plugin_config *s = p->config_storage[i];
-
 			if (NULL == s) continue;
-
 			pcre_keyvalue_buffer_free(s->redirect);
-
 			free(s);
 		}
 		free(p->config_storage);
 	}
 
-
-	buffer_free(p->location);
-
 	free(p);
-
 	return HANDLER_GO_ON;
 }
 
@@ -99,6 +82,8 @@ SETDEFAULTS_FUNC(mod_redirect_set_defaults) {
 			return HANDLER_ERROR;
 		}
 
+		if (s->redirect_code < 100 || s->redirect_code >= 1000) s->redirect_code = 301;
+
 		if (NULL == (du = array_get_element(config->value, "url.redirect"))) {
 			/* no url.redirect defined */
 			continue;
@@ -113,12 +98,14 @@ SETDEFAULTS_FUNC(mod_redirect_set_defaults) {
 		}
 
 		for (j = 0; j < da->value->used; j++) {
-			if (0 != pcre_keyvalue_buffer_append(srv, s->redirect,
-							     ((data_string *)(da->value->data[j]))->key->ptr,
-							     ((data_string *)(da->value->data[j]))->value->ptr)) {
-
+			data_string *ds = (data_string *)da->value->data[j];
+			if (srv->srvconf.http_url_normalize) {
+				pcre_keyvalue_burl_normalize_key(ds->key, srv->tmp_buf);
+				pcre_keyvalue_burl_normalize_value(ds->value, srv->tmp_buf);
+			}
+			if (0 != pcre_keyvalue_buffer_append(srv, s->redirect, ds->key, ds->value)) {
 				log_error_write(srv, __FILE__, __LINE__, "sb",
-						"pcre-compile failed for", da->value->data[j]->key);
+						"pcre-compile failed for", ds->key);
 				return HANDLER_ERROR;
 			}
 		}
@@ -126,7 +113,7 @@ SETDEFAULTS_FUNC(mod_redirect_set_defaults) {
 
 	return HANDLER_GO_ON;
 }
-#ifdef HAVE_PCRE_H
+
 static int mod_redirect_patch_connection(server *srv, connection *con, plugin_data *p) {
 	size_t i, j;
 	plugin_config *s = p->config_storage[0];
@@ -158,69 +145,45 @@ static int mod_redirect_patch_connection(server *srv, connection *con, plugin_da
 
 	return 0;
 }
-#endif
-static handler_t mod_redirect_uri_handler(server *srv, connection *con, void *p_data) {
-#ifdef HAVE_PCRE_H
-	plugin_data *p = p_data;
-	cond_cache_t *cache;
-	size_t i;
 
-	/*
-	 * REWRITE URL
-	 *
-	 * e.g. redirect /base/ to /index.php?section=base
-	 *
-	 */
+URIHANDLER_FUNC(mod_redirect_uri_handler) {
+    plugin_data *p = p_d;
+    struct burl_parts_t burl;
+    pcre_keyvalue_ctx ctx;
+    handler_t rc;
 
-	mod_redirect_patch_connection(srv, con, p);
-	cache = p->conf.context ? &con->cond_cache[p->conf.context->context_ndx] : NULL;
+    mod_redirect_patch_connection(srv, con, p);
+    if (!p->conf.redirect->used) return HANDLER_GO_ON;
+    ctx.cache = p->conf.context
+      ? &con->cond_cache[p->conf.context->context_ndx]
+      : NULL;
+    ctx.burl = &burl;
+    burl.scheme    = con->uri.scheme;
+    burl.authority = con->uri.authority;
+    burl.port      = sock_addr_get_port(&con->srv_socket->addr);
+    burl.path      = con->uri.path_raw;
+    burl.query     = con->uri.query;
 
-	for (i = 0; i < p->conf.redirect->used; i++) {
-		pcre_keyvalue *kv = p->conf.redirect->kv[i];
-# define N 10
-		int ovec[N * 3];
-		int n = pcre_exec(kv->key, kv->key_extra, CONST_BUF_LEN(con->request.uri), 0, 0, ovec, 3 * N);
-
-		if (n < 0) {
-			if (n != PCRE_ERROR_NOMATCH) {
-				log_error_write(srv, __FILE__, __LINE__, "sd",
-						"execution error while matching: ", n);
-				return HANDLER_ERROR;
-			}
-		} else if (0 == buffer_string_length(kv->value)) {
-			/* short-circuit if blank replacement pattern
-			 * (do not attempt to match against remaining redirect rules) */
-			return HANDLER_GO_ON;
-		} else {
-			const char **list;
-
-			/* it matched */
-			pcre_get_substring_list(con->request.uri->ptr, ovec, n, &list);
-
-			pcre_keyvalue_buffer_subst(p->location, kv->value, list, n, cache);
-
-			pcre_free(list);
-
-			response_header_insert(srv, con, CONST_STR_LEN("Location"), CONST_BUF_LEN(p->location));
-
-			con->http_status = p->conf.redirect_code > 99 && p->conf.redirect_code < 1000 ? p->conf.redirect_code : 301;
-			con->mode = DIRECT;
-			con->file_finished = 1;
-
-			return HANDLER_FINISHED;
-		}
-	}
-#undef N
-
-#else
-	UNUSED(srv);
-	UNUSED(con);
-	UNUSED(p_data);
-#endif
-
-	return HANDLER_GO_ON;
+    /* redirect URL on match
+     * e.g. redirect /base/ to /index.php?section=base
+     */
+    rc = pcre_keyvalue_buffer_process(p->conf.redirect, &ctx,
+                                      con->request.uri, srv->tmp_buf);
+    if (HANDLER_FINISHED == rc) {
+        http_header_response_set(con, HTTP_HEADER_LOCATION,
+                                 CONST_STR_LEN("Location"),
+                                 CONST_BUF_LEN(srv->tmp_buf));
+        con->http_status = p->conf.redirect_code;
+        con->mode = DIRECT;
+        con->file_finished = 1;
+    }
+    else if (HANDLER_ERROR == rc) {
+        log_error_write(srv, __FILE__, __LINE__, "sb",
+                        "pcre_exec() error while processing uri:",
+                        con->request.uri);
+    }
+    return rc;
 }
-
 
 int mod_redirect_plugin_init(plugin *p);
 int mod_redirect_plugin_init(plugin *p) {

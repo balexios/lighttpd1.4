@@ -3,6 +3,7 @@
 *.exe
 *~
 .deps/
+.dirstamp
 .libs/
 .sconf_temp
 .sconsign.dblite
@@ -43,12 +44,13 @@ m4/
 missing
 mod_ssi_exprparser.c
 mod_ssi_exprparser.h
-proc_open
 scgi-responder
 sconsbuild/
 stamp-h1
+test_array
 test_base64
 test_buffer
+test_burl
 test_configfile
+test_request
 versionstamp.h
-bin/

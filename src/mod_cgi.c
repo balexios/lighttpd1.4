@@ -1,13 +1,14 @@
 #include "first.h"
 
-#include "server.h"
+#include "base.h"
 #include "stat_cache.h"
-#include "keyvalue.h"
+#include "http_kv.h"
 #include "log.h"
 #include "connections.h"
 #include "joblist.h"
 #include "response.h"
 #include "http_chunk.h"
+#include "http_header.h"
 
 #include "plugin.h"
 
@@ -355,24 +356,25 @@ static handler_t cgi_response_headers(server *srv, connection *con, struct http_
     /* response headers just completed */
     handler_ctx *hctx = (handler_ctx *)opts->pdata;
 
-    if (con->parsed_response & HTTP_UPGRADE) {
+    if (con->response.htags & HTTP_HEADER_UPGRADE) {
         if (hctx->conf.upgrade && con->http_status == 101) {
             /* 101 Switching Protocols; transition to transparent proxy */
             http_response_upgrade_read_body_unknown(srv, con);
         }
         else {
-            con->parsed_response &= ~HTTP_UPGRADE;
+            con->response.htags &= ~HTTP_HEADER_UPGRADE;
           #if 0
             /* preserve prior questionable behavior; likely broken behavior
              * anyway if backend thinks connection is being upgraded but client
              * does not receive Connection: upgrade */
-            response_header_overwrite(srv, con, CONST_STR_LEN("Upgrade"),
-                                                CONST_STR_LEN(""));
+            http_header_response_set(con, HTTP_HEADER_UPGRADE,
+                                     CONST_STR_LEN("Upgrade"),
+                                     CONST_STR_LEN(""));
           #endif
         }
     }
 
-    if (hctx->conf.upgrade && !(con->parsed_response & HTTP_UPGRADE)) {
+    if (hctx->conf.upgrade && !(con->response.htags & HTTP_HEADER_UPGRADE)) {
         chunkqueue *cq = con->request_content_queue;
         hctx->conf.upgrade = 0;
         if (cq->bytes_out == (off_t)con->request.content_length) {
@@ -833,23 +835,6 @@ static int cgi_create_env(server *srv, connection *con, plugin_data *p, handler_
 	}
 }
 
-static buffer * cgi_get_handler(array *a, buffer *fn) {
-	size_t k, s_len = buffer_string_length(fn);
-	for (k = 0; k < a->used; ++k) {
-		data_string *ds = (data_string *)a->data[k];
-		size_t ct_len = buffer_string_length(ds->key);
-
-		if (buffer_is_empty(ds->key)) continue;
-		if (s_len < ct_len) continue;
-
-		if (0 == strncmp(fn->ptr + s_len - ct_len, ds->key->ptr, ct_len)) {
-			return ds->value;
-		}
-	}
-
-	return NULL;
-}
-
 #define PATCH(x) \
 	p->conf.x = s->x;
 static int mod_cgi_patch_connection(server *srv, connection *con, plugin_data *p) {
@@ -897,17 +882,18 @@ static int mod_cgi_patch_connection(server *srv, connection *con, plugin_data *p
 
 URIHANDLER_FUNC(cgi_is_handled) {
 	plugin_data *p = p_d;
-	buffer *fn = con->physical.path;
 	stat_cache_entry *sce = NULL;
 	struct stat stbuf;
 	struct stat *st;
-	buffer *cgi_handler;
+	data_string *ds;
 
 	if (con->mode != DIRECT) return HANDLER_GO_ON;
-
-	if (buffer_is_empty(fn)) return HANDLER_GO_ON;
+	if (buffer_is_empty(con->physical.path)) return HANDLER_GO_ON;
 
 	mod_cgi_patch_connection(srv, con, p);
+
+	ds = (data_string *)array_match_key_suffix(p->conf.cgi, con->physical.path);
+	if (NULL == ds) return HANDLER_GO_ON;
 
 	if (HANDLER_ERROR != stat_cache_get_entry(srv, con, con->physical.path, &sce)) {
 		st = &sce->st;
@@ -921,16 +907,16 @@ URIHANDLER_FUNC(cgi_is_handled) {
 	if (!S_ISREG(st->st_mode)) return HANDLER_GO_ON;
 	if (p->conf.execute_x_only == 1 && (st->st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0) return HANDLER_GO_ON;
 
-	if (NULL != (cgi_handler = cgi_get_handler(p->conf.cgi, fn))) {
+	{
 		handler_ctx *hctx = cgi_handler_ctx_init();
 		hctx->remote_conn = con;
 		hctx->plugin_data = p;
-		hctx->cgi_handler = cgi_handler;
+		hctx->cgi_handler = ds->value;
 		memcpy(&hctx->conf, &p->conf, sizeof(plugin_config));
 		hctx->conf.upgrade =
 		  hctx->conf.upgrade
 		  && con->request.http_version == HTTP_VERSION_1_1
-		  && NULL != array_get_element_klen(con->request.headers, CONST_STR_LEN("Upgrade"));
+		  && NULL != http_header_request_get(con, HTTP_HEADER_UPGRADE, CONST_STR_LEN("Upgrade"));
 		hctx->opts.fdfmt = S_IFIFO;
 		hctx->opts.backend = BACKEND_CGI;
 		hctx->opts.authorizer = 0;

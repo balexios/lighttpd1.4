@@ -1,7 +1,8 @@
 #include "first.h"
 
-#include "log.h"
 #include "stat_cache.h"
+#include "base.h"
+#include "log.h"
 #include "fdevent.h"
 #include "etag.h"
 #include "splaytree.h"
@@ -342,6 +343,7 @@ static void stat_cache_fam_dir_monitor(server *srv, stat_cache_fam *scf, stat_ca
 					FamErrlist[FAMErrno]);
 
 			fam_dir_entry_free(&scf->fam, fam_dir);
+			fam_dir = NULL;
 		} else {
 			int osize = splaytree_size(scf->dirs);
 

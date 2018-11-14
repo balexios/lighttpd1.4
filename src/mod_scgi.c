@@ -3,6 +3,7 @@
 #include <sys/types.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "gw_backend.h"
@@ -13,7 +14,6 @@ typedef gw_handler_ctx   handler_ctx;
 #include "base.h"
 #include "buffer.h"
 #include "log.h"
-#include "plugin.h"
 #include "status_counter.h"
 
 #include "sys-endian.h"
@@ -160,6 +160,7 @@ static handler_t scgi_create_env(server *srv, handler_ctx *hctx) {
 	if (0 != http_cgi_headers(srv, con, &opts, scgi_env_add, scgi_env)) {
 		buffer_free(scgi_env);
 		con->http_status = 400;
+		con->mode = DIRECT;
 		return HANDLER_FINISHED;
 	}
 
@@ -217,6 +218,7 @@ static int scgi_patch_connection(server *srv, connection *con, plugin_data *p) {
 	PATCH(exts_resp);
 	PATCH(proto);
 	PATCH(debug);
+	PATCH(balance);
 	PATCH(ext_mapping);
 
 	/* skip the first, the global context */
@@ -237,6 +239,8 @@ static int scgi_patch_connection(server *srv, connection *con, plugin_data *p) {
 				PATCH(exts_resp);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("scgi.protocol"))) {
 				PATCH(proto);
+			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("scgi.balance"))) {
+				PATCH(balance);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("scgi.debug"))) {
 				PATCH(debug);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("scgi.map-extensions"))) {

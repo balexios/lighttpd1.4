@@ -4,6 +4,7 @@
 #include "fdevent.h"
 #include "log.h"
 #include "buffer.h"
+#include "http_header.h"
 
 #include "plugin.h"
 
@@ -14,6 +15,7 @@
 #include "sys-socket.h"
 
 #include <sys/types.h>
+#include <sys/stat.h>
 #include "sys-strings.h"
 #include <sys/wait.h>
 
@@ -154,18 +156,7 @@ SETDEFAULTS_FUNC(mod_ssi_set_defaults) {
 
 
 static int ssi_env_add(void *venv, const char *key, size_t klen, const char *val, size_t vlen) {
-	array *env = venv;
-	data_string *ds;
-
-	/* array_set_key_value() w/o extra lookup to see if key already exists */
-	if (NULL == (ds = (data_string *)array_get_unused_element(env, TYPE_STRING))) {
-		ds = data_string_init();
-	}
-	buffer_copy_string_len(ds->key,   key, klen);
-	buffer_copy_string_len(ds->value, val, vlen);
-
-	array_insert_unique(env, (data_unset *)ds);
-
+	array_insert_key_value((array *)venv, key, klen, val, vlen);
 	return 0;
 }
 
@@ -173,11 +164,11 @@ static int build_ssi_cgi_vars(server *srv, connection *con, handler_ctx *p) {
 	http_cgi_opts opts = { 0, 0, NULL, NULL };
 	/* temporarily remove Authorization from request headers
 	 * so that Authorization does not end up in SSI environment */
-	data_string *ds_auth = (data_string *)array_get_element(con->request.headers, "Authorization");
-	buffer *b_auth = NULL;
-	if (ds_auth) {
-		b_auth = ds_auth->value;
-		ds_auth->value = NULL;
+	buffer *vb_auth = http_header_request_get(con, HTTP_HEADER_AUTHORIZATION, CONST_STR_LEN("Authorization"));
+	buffer b_auth;
+	if (vb_auth) {
+		memcpy(&b_auth, vb_auth, sizeof(buffer));
+		memset(vb_auth, 0, sizeof(buffer));
 	}
 
 	array_reset(p->ssi_cgi_env);
@@ -187,8 +178,8 @@ static int build_ssi_cgi_vars(server *srv, connection *con, handler_ctx *p) {
 		return -1;
 	}
 
-	if (ds_auth) {
-		ds_auth->value = b_auth;
+	if (vb_auth) {
+		memcpy(vb_auth, &b_auth, sizeof(buffer));
 	}
 
 	return 0;
@@ -690,15 +681,7 @@ static int process_ssi_stmt(server *srv, connection *con, handler_ctx *p, const 
 		if (p->if_is_false) break;
 
 		if (key && val) {
-			data_string *ds;
-
-			if (NULL == (ds = (data_string *)array_get_unused_element(p->ssi_vars, TYPE_STRING))) {
-				ds = data_string_init();
-			}
-			buffer_copy_string(ds->key,   key);
-			buffer_copy_string(ds->value, val);
-
-			array_insert_unique(p->ssi_vars, (data_unset *)ds);
+			array_insert_key_value(p->ssi_vars, key, strlen(key), val, strlen(val));
 		} else if (key || val) {
 			log_error_write(srv, __FILE__, __LINE__, "sSSss",
 					"ssi: var and value have to be set in <!--#set", l[1], "=", l[2], "-->");
@@ -1226,9 +1209,9 @@ static int mod_ssi_handle_request(server *srv, connection *con, handler_ctx *p) 
 	con->file_finished = 1;
 
 	if (buffer_string_is_empty(p->conf.content_type)) {
-		response_header_overwrite(srv, con, CONST_STR_LEN("Content-Type"), CONST_STR_LEN("text/html"));
+		http_header_response_set(con, HTTP_HEADER_CONTENT_TYPE, CONST_STR_LEN("Content-Type"), CONST_STR_LEN("text/html"));
 	} else {
-		response_header_overwrite(srv, con, CONST_STR_LEN("Content-Type"), CONST_BUF_LEN(p->conf.content_type));
+		http_header_response_set(con, HTTP_HEADER_CONTENT_TYPE, CONST_STR_LEN("Content-Type"), CONST_BUF_LEN(p->conf.content_type));
 	}
 
 	if (p->conf.conditional_requests) {
@@ -1241,10 +1224,10 @@ static int mod_ssi_handle_request(server *srv, connection *con, handler_ctx *p) 
 
 		etag_create(con->physical.etag, &st, con->etag_flags);
 		etag_mutate(con->physical.etag, con->physical.etag);
-		response_header_overwrite(srv, con, CONST_STR_LEN("ETag"), CONST_BUF_LEN(con->physical.etag));
+		http_header_response_set(con, HTTP_HEADER_ETAG, CONST_STR_LEN("ETag"), CONST_BUF_LEN(con->physical.etag));
 
 		mtime = strftime_cache_get(srv, st.st_mtime);
-		response_header_overwrite(srv, con, CONST_STR_LEN("Last-Modified"), CONST_BUF_LEN(mtime));
+		http_header_response_set(con, HTTP_HEADER_LAST_MODIFIED, CONST_STR_LEN("Last-Modified"), CONST_BUF_LEN(mtime));
 
 		if (HANDLER_FINISHED == http_response_handle_cachable(srv, con, mtime)) {
 			/* ok, the client already has our content,
@@ -1307,24 +1290,15 @@ static int mod_ssi_patch_connection(server *srv, connection *con, plugin_data *p
 
 URIHANDLER_FUNC(mod_ssi_physical_path) {
 	plugin_data *p = p_d;
-	size_t k;
 
 	if (con->mode != DIRECT) return HANDLER_GO_ON;
-
 	if (buffer_is_empty(con->physical.path)) return HANDLER_GO_ON;
 
 	mod_ssi_patch_connection(srv, con, p);
 
-	for (k = 0; k < p->conf.ssi_extension->used; k++) {
-		data_string *ds = (data_string *)p->conf.ssi_extension->data[k];
-
-		if (buffer_is_empty(ds->value)) continue;
-
-		if (buffer_is_equal_right_len(con->physical.path, ds->value, buffer_string_length(ds->value))) {
+	if (array_match_value_suffix(p->conf.ssi_extension, con->physical.path)) {
 			con->plugin_ctx[p->id] = handler_ctx_init(p);
 			con->mode = p->id;
-			break;
-		}
 	}
 
 	return HANDLER_GO_ON;

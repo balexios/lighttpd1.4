@@ -2,6 +2,7 @@
 
 #include <sys/types.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "gw_backend.h"
@@ -14,7 +15,6 @@ typedef gw_handler_ctx   handler_ctx;
 #include "fdevent.h"
 #include "http_chunk.h"
 #include "log.h"
-#include "plugin.h"
 #include "status_counter.h"
 
 #ifdef HAVE_FASTCGI_FASTCGI_H
@@ -243,6 +243,7 @@ static handler_t fcgi_create_env(server *srv, handler_ctx *hctx) {
 
 	if (0 != http_cgi_headers(srv, con, &opts, fcgi_env_add, fcgi_env)) {
 		con->http_status = 400;
+		con->mode = DIRECT;
 		buffer_free(fcgi_env);
 		return HANDLER_FINISHED;
 	} else {
@@ -463,6 +464,7 @@ static int fcgi_patch_connection(server *srv, connection *con, plugin_data *p) {
 	PATCH(exts_auth);
 	PATCH(exts_resp);
 	PATCH(debug);
+	PATCH(balance);
 	PATCH(ext_mapping);
 
 	/* skip the first, the global context */
@@ -483,6 +485,8 @@ static int fcgi_patch_connection(server *srv, connection *con, plugin_data *p) {
 				PATCH(exts_resp);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("fastcgi.debug"))) {
 				PATCH(debug);
+			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("fastcgi.balance"))) {
+				PATCH(balance);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("fastcgi.map-extensions"))) {
 				PATCH(ext_mapping);
 			}
@@ -512,7 +516,12 @@ static handler_t fcgi_check_extension(server *srv, connection *con, void *p_d, i
 		hctx->opts.pdata = hctx;
 		hctx->stdin_append = fcgi_stdin_append;
 		hctx->create_env = fcgi_create_env;
-		hctx->rb = chunkqueue_init();
+		if (!hctx->rb) {
+			hctx->rb = chunkqueue_init();
+		}
+		else {
+			chunkqueue_reset(hctx->rb);
+		}
 	}
 
 	return HANDLER_GO_ON;
