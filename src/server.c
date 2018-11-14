@@ -18,11 +18,11 @@
 #include "joblist.h"
 #include "network_write.h"
 
-//#ifdef HAVE_VERSIONSTAMP_H
-//# include "versionstamp.h"
-//#else
+#ifdef HAVE_VERSIONSTAMP_H
+# include "versionstamp.h"
+#else
 # define REPO_VERSION ""
-//#endif
+#endif
 
 #define PACKAGE_DESC PACKAGE_NAME "/" PACKAGE_VERSION REPO_VERSION
 
